@@ -65,6 +65,11 @@
                 android:value="Live game subtitle translation overlay" />
         </service>
 
+        <activity
+            android:name=".regist.PsnLoginActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:exported="false" />
+
         <activity android:name=".main.MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
             android:exported="false" />

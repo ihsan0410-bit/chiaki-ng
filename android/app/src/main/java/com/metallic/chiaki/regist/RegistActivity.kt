@@ -28,6 +28,7 @@ class RegistActivity: AppCompatActivity(), RevealActivity
 		private const val PIN_LENGTH = 8
 
 		private const val REQUEST_REGIST = 1
+		private const val REQUEST_PSN_LOGIN = 2
 	}
 
 	private lateinit var viewModel: RegistViewModel
@@ -50,6 +51,10 @@ class RegistActivity: AppCompatActivity(), RevealActivity
 		binding.broadcastCheckBox.isChecked = intent.getBooleanExtra(EXTRA_BROADCAST, true)
 
 		binding.registButton.setOnClickListener { doRegist() }
+		binding.psnLoginButton.setOnClickListener {
+			@Suppress("DEPRECATION")
+			startActivityForResult(Intent(this, PsnLoginActivity::class.java), REQUEST_PSN_LOGIN)
+		}
 
 		binding.ps4VersionRadioGroup.check(when(viewModel.ps4Version.value ?: RegistViewModel.ConsoleVersion.PS5) {
 			RegistViewModel.ConsoleVersion.PS5 -> R.id.ps5RadioButton
@@ -142,6 +147,21 @@ class RegistActivity: AppCompatActivity(), RevealActivity
 	override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?)
 	{
 		super.onActivityResult(requestCode, resultCode, data)
+		if(requestCode == REQUEST_PSN_LOGIN)
+		{
+			val accountId = data?.getStringExtra(PsnLoginActivity.EXTRA_ACCOUNT_ID)
+			if(resultCode == RESULT_OK && accountId != null)
+			{
+				binding.psnIdEditText.setText(accountId)
+				android.widget.Toast.makeText(this, "Account ID dolduruldu: $accountId", android.widget.Toast.LENGTH_LONG).show()
+			}
+			else
+			{
+				val err = data?.getStringExtra(PsnLoginActivity.EXTRA_ERROR) ?: "Giriş iptal edildi"
+				android.widget.Toast.makeText(this, err, android.widget.Toast.LENGTH_LONG).show()
+			}
+			return
+		}
 		if(requestCode == REQUEST_REGIST && resultCode == RESULT_OK)
 			finish()
 	}
