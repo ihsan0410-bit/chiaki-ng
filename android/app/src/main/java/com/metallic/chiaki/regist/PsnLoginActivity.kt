@@ -163,7 +163,7 @@ class PsnLoginActivity : Activity()
 	private fun submitPasted()
 	{
 		val text = pasteField.text.toString().trim()
-		val code = Regex("[?&]code=([^&\\s#]+)").find(text)?.groupValues?.get(1)
+		val code = Regex("[?&]code=([^&\\s#]+)").find(text)?.groupValues?.get(1)?.let { Uri.decode(it) }
 			?: text.takeIf { it.isNotEmpty() && !it.contains("/") && !it.contains(" ") }
 		if(code.isNullOrEmpty())
 		{
@@ -300,18 +300,24 @@ class PsnLoginActivity : Activity()
 			catch(e: Exception)
 			{
 				handled = false
-				runOnUiThread { onError("Hesap numarası alınamadı (${e.message}). Kodun süresi dolmuş olabilir, tekrar giriş yapıp yeni adresi yapıştır.") }
+				runOnUiThread { onError("Hesap numarası alınamadı.\nSony'nin cevabı: ${e.message}\n\nBu ekranın fotoğrafını Claude'a gönder. Tekrar denemek için yeniden giriş yapıp YENİ adresi yapıştır.") }
 			}
 		}
 	}
+
+	private fun errorText(conn: HttpURLConnection): String = try
+	{
+		(conn.errorStream?.bufferedReader()?.readText() ?: "").take(300)
+	}
+	catch(e: Exception) { "" }
 
 	private fun basicAuth() = "Basic " + Base64.encodeToString("$CLIENT_ID:$CLIENT_SECRET".toByteArray(), Base64.NO_WRAP)
 
 	private fun fetchAccountId(code: String): String
 	{
 		// 1) Kodu erişim anahtarıyla değiştir
-		val body = "grant_type=authorization_code&code=${URLEncoder.encode(code, "UTF-8")}" +
-			"&scope=${URLEncoder.encode(SCOPE, "UTF-8")}&redirect_uri=${URLEncoder.encode(REDIRECT, "UTF-8")}"
+		// chiaki-ng masaüstü ile birebir aynı gövde
+		val body = "grant_type=authorization_code&code=$code&scope=$SCOPE&redirect_uri=$REDIRECT&"
 		val tokenConn = (URL(TOKEN_URL).openConnection() as HttpURLConnection).apply {
 			requestMethod = "POST"
 			doOutput = true
@@ -322,7 +328,7 @@ class PsnLoginActivity : Activity()
 		}
 		tokenConn.outputStream.use { it.write(body.toByteArray()) }
 		if(tokenConn.responseCode !in 200..299)
-			throw Exception("token HTTP ${tokenConn.responseCode}")
+			throw Exception("token HTTP ${tokenConn.responseCode}: ${errorText(tokenConn)}")
 		val accessToken = JSONObject(tokenConn.inputStream.bufferedReader().readText()).getString("access_token")
 
 		// 2) Anahtarın bilgisinden kullanıcı numarasını oku
@@ -332,7 +338,7 @@ class PsnLoginActivity : Activity()
 			readTimeout = 15000
 		}
 		if(infoConn.responseCode !in 200..299)
-			throw Exception("bilgi HTTP ${infoConn.responseCode}")
+			throw Exception("bilgi HTTP ${infoConn.responseCode}: ${errorText(infoConn)}")
 		val userId = JSONObject(infoConn.inputStream.bufferedReader().readText()).getString("user_id").toULong()
 
 		// 3) 8 bayt little-endian → base64 (Remote Play'in istediği biçim)
