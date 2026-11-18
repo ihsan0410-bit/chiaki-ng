@@ -5,6 +5,9 @@ on:
     branches: [ "**" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -49,3 +52,14 @@ jobs:
         with:
           name: chiaki-ceviri-apk
           path: android/app/build/outputs/apk/debug/*.apk
+
+      - name: TV'ye kolay indirme için sürüm (release) olarak yayınla
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/debug/*.apk chiaki-ceviri.apk
+          gh release delete ceviri-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create ceviri-latest chiaki-ceviri.apk \
+            --target "${{ github.sha }}" \
+            --title "Chiaki Çeviri (Türkçe altyazı) - son sürüm" \
+            --notes "Commit: ${{ github.sha }}" --prerelease
