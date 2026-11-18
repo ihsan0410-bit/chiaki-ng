@@ -23,6 +23,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Sistem bağımlılıkları (protoc)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Python bağımlılıkları (nanopb)
         run: pip install protobuf grpcio-tools
 
