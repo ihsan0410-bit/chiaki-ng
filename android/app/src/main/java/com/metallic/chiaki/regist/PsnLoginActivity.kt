@@ -43,8 +43,14 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import org.json.JSONObject
 import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
+import java.net.InetAddress
+import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
+import okhttp3.Dns
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlin.concurrent.thread
 
 class PsnLoginActivity : Activity()
@@ -313,33 +319,78 @@ class PsnLoginActivity : Activity()
 
 	private fun basicAuth() = "Basic " + Base64.encodeToString("$CLIENT_ID:$CLIENT_SECRET".toByteArray(), Base64.NO_WRAP)
 
+	// TV'nin DNS'i Sony sunucusunu bulamazsa Google DNS (HTTPS üzerinden) ile çöz
+	private val fallbackDns = object: Dns
+	{
+		override fun lookup(hostname: String): List<InetAddress>
+		{
+			try { return Dns.SYSTEM.lookup(hostname) }
+			catch(e: UnknownHostException) { }
+			return dohLookup(hostname)
+		}
+	}
+
+	private fun dohLookup(host: String): List<InetAddress>
+	{
+		val doh = OkHttpClient.Builder()
+			.dns(object: Dns {
+				override fun lookup(hostname: String): List<InetAddress> =
+					if(hostname == "dns.google") listOf(InetAddress.getByName("8.8.8.8"), InetAddress.getByName("8.8.4.4"))
+					else Dns.SYSTEM.lookup(hostname)
+			})
+			.connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS)
+			.build()
+		val req = Request.Builder().url("https://dns.google/resolve?name=$host&type=A")
+			.header("accept", "application/dns-json").build()
+		val result = mutableListOf<InetAddress>()
+		doh.newCall(req).execute().use { resp ->
+			val answers = JSONObject(resp.body?.string() ?: "{}").optJSONArray("Answer")
+			if(answers != null)
+				for(i in 0 until answers.length())
+				{
+					val a = answers.getJSONObject(i)
+					if(a.optInt("type") == 1)
+						result.add(InetAddress.getByName(a.getString("data")))
+				}
+		}
+		if(result.isEmpty())
+			throw UnknownHostException("$host (Google DNS de bulamadı)")
+		return result
+	}
+
+	private val http by lazy {
+		OkHttpClient.Builder()
+			.dns(fallbackDns)
+			.connectTimeout(20, TimeUnit.SECONDS)
+			.readTimeout(20, TimeUnit.SECONDS)
+			.build()
+	}
+
 	private fun fetchAccountId(code: String): String
 	{
-		// 1) Kodu erişim anahtarıyla değiştir
-		// chiaki-ng masaüstü ile birebir aynı gövde
+		// 1) Kodu erişim anahtarıyla değiştir (chiaki-ng masaüstü ile birebir aynı gövde)
 		val body = "grant_type=authorization_code&code=$code&scope=$SCOPE&redirect_uri=$REDIRECT&"
-		val tokenConn = (URL(TOKEN_URL).openConnection() as HttpURLConnection).apply {
-			requestMethod = "POST"
-			doOutput = true
-			setRequestProperty("Authorization", basicAuth())
-			setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-			connectTimeout = 15000
-			readTimeout = 15000
+		val tokenReq = Request.Builder().url(TOKEN_URL)
+			.header("Authorization", basicAuth())
+			.post(body.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+			.build()
+		val accessToken = http.newCall(tokenReq).execute().use { resp ->
+			val text = resp.body?.string() ?: ""
+			if(!resp.isSuccessful)
+				throw Exception("token HTTP ${resp.code}: ${text.take(300)}")
+			JSONObject(text).getString("access_token")
 		}
-		tokenConn.outputStream.use { it.write(body.toByteArray()) }
-		if(tokenConn.responseCode !in 200..299)
-			throw Exception("token HTTP ${tokenConn.responseCode}: ${errorText(tokenConn)}")
-		val accessToken = JSONObject(tokenConn.inputStream.bufferedReader().readText()).getString("access_token")
 
 		// 2) Anahtarın bilgisinden kullanıcı numarasını oku
-		val infoConn = (URL("$TOKEN_URL/$accessToken").openConnection() as HttpURLConnection).apply {
-			setRequestProperty("Authorization", basicAuth())
-			connectTimeout = 15000
-			readTimeout = 15000
+		val infoReq = Request.Builder().url("$TOKEN_URL/$accessToken")
+			.header("Authorization", basicAuth())
+			.build()
+		val userId = http.newCall(infoReq).execute().use { resp ->
+			val text = resp.body?.string() ?: ""
+			if(!resp.isSuccessful)
+				throw Exception("bilgi HTTP ${resp.code}: ${text.take(300)}")
+			JSONObject(text).getString("user_id").toULong()
 		}
-		if(infoConn.responseCode !in 200..299)
-			throw Exception("bilgi HTTP ${infoConn.responseCode}: ${errorText(infoConn)}")
-		val userId = JSONObject(infoConn.inputStream.bufferedReader().readText()).getString("user_id").toULong()
 
 		// 3) 8 bayt little-endian → base64 (Remote Play'in istediği biçim)
 		val bytes = ByteArray(8) { i -> ((userId shr (8 * i)) and 0xFFu).toByte() }

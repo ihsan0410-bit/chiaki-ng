@@ -141,6 +141,8 @@ dependencies {
     implementation 'com.google.mlkit:translate:17.0.3'
     // PSN girişi için QR kod
     implementation 'com.google.zxing:core:3.5.3'
+    // DNS yedekli HTTP (PSN girişi)
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
     testImplementation 'junit:junit:4.13.2'
 }
