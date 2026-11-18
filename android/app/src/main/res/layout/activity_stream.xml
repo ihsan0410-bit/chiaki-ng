@@ -18,6 +18,45 @@
             android:id="@+id/surfaceView"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
+
+        <!-- Türkçe altyazı: orijinal İngilizce altyazının üstünü kapatır -->
+        <TextView
+            android:id="@+id/translatedSubtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginStart="110dp"
+            android:layout_marginEnd="110dp"
+            android:layout_marginBottom="16dp"
+            android:minHeight="84dp"
+            android:gravity="center"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:background="#E6000000"
+            android:textColor="#FFFFFFFF"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:shadowColor="#FF000000"
+            android:shadowRadius="4"
+            android:visibility="gone"
+            android:focusable="false"
+            android:clickable="false"/>
+
+        <TextView
+            android:id="@+id/translatorStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="24dp"
+            android:padding="10dp"
+            android:background="#CC000000"
+            android:textColor="#FFFFFFFF"
+            android:textSize="16sp"
+            android:visibility="gone"
+            android:focusable="false"
+            android:clickable="false"/>
     </com.metallic.chiaki.stream.AspectRatioFrameLayout>
 
     <ProgressBar
@@ -70,6 +109,18 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="200dp"
                 android:text="@string/stream_touchpad_only"
+                android:textColor="@color/stream_text"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:switchPadding="8dp" />
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/turkishSubtitlesSwitch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="400dp"
+                android:text="Türkçe altyazı"
+                android:checked="true"
                 android:textColor="@color/stream_text"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintStart_toStartOf="parent"

@@ -55,6 +55,8 @@ class StreamActivity : AppCompatActivity()
 
 	private val uiVisibilityHandler = Handler(Looper.getMainLooper())
 
+	private var subtitleTranslator: SubtitleTranslator? = null
+
 	override fun onCreate(savedInstanceState: Bundle?)
 	{
 		super.onCreate(savedInstanceState)
@@ -117,6 +119,17 @@ class StreamActivity : AppCompatActivity()
 
 		//viewModel.session.attachToTextureView(textureView)
 		viewModel.session.attachToSurfaceView(binding.surfaceView)
+
+		val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+		subtitleTranslator = SubtitleTranslator(binding.surfaceView, binding.translatedSubtitle, binding.translatorStatus).also {
+			it.enabled = prefs.getBoolean("turkish_subtitles_enabled", true)
+		}
+		binding.turkishSubtitlesSwitch.isChecked = subtitleTranslator?.enabled ?: true
+		binding.turkishSubtitlesSwitch.setOnCheckedChangeListener { _, isChecked ->
+			subtitleTranslator?.enabled = isChecked
+			prefs.edit().putBoolean("turkish_subtitles_enabled", isChecked).apply()
+			showOverlay()
+		}
 		viewModel.session.state.observe(this, Observer { this.stateChanged(it) })
 		adjustStreamViewAspect()
 
@@ -158,17 +171,21 @@ class StreamActivity : AppCompatActivity()
 		super.onResume()
 		hideSystemUI()
 		viewModel.session.resume()
+		subtitleTranslator?.start()
 	}
 
 	override fun onPause()
 	{
 		super.onPause()
+		subtitleTranslator?.stop()
 		viewModel.session.pause()
 	}
 
 	override fun onDestroy()
 	{
 		super.onDestroy()
+		subtitleTranslator?.close()
+		subtitleTranslator = null
 		controlsJob?.cancel()
 	}
 
