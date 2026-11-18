@@ -3,15 +3,22 @@
 // Türkçe altyazı katmanı: Remote Play görüntüsünün alt kısmındaki İngilizce
 // altyazıyı cihaz üzerinde (internetsiz) okur, Türkçeye çevirir ve orijinal
 // altyazının üstüne yazar. Görüntü kaydedilmez, hiçbir yere gönderilmez.
+//
+// Görüntü iki yoldan okunabilir:
+//  - SurfaceView + PixelCopy (varsayılan)
+//  - ImageReader (bazı TV'lerde PixelCopy çalışmazsa yedek yol; Y düzlemi = gri ton)
 
 package com.metallic.chiaki.stream
 
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Rect
+import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
 import android.view.PixelCopy
@@ -31,18 +38,19 @@ import kotlin.math.max
 import kotlin.math.min
 
 class SubtitleTranslator(
-	private val surfaceView: SurfaceView,
+	private val surfaceView: SurfaceView?,
 	private val subtitleView: TextView,
-	private val statusView: TextView
+	private val statusView: TextView,
+	private val debugView: TextView? = null
 )
 {
 	companion object
 	{
 		private const val TAG = "SubtitleTranslator"
 
-		/** Ekranın taranacak bölgesi (oran olarak). GTA altyazıları alt ortada çıkar. */
-		private const val REGION_LEFT = 0.12f
-		private const val REGION_RIGHT = 0.88f
+		/** Ekranın taranacak bölgesi (oran olarak). Altyazılar genelde alt ortada çıkar. */
+		private const val REGION_LEFT = 0.10f
+		private const val REGION_RIGHT = 0.90f
 		private const val REGION_TOP = 0.70f
 		private const val REGION_BOTTOM = 0.97f
 
@@ -72,11 +80,26 @@ class SubtitleTranslator(
 	@Volatile private var running = false
 	@Volatile private var busy = false
 	@Volatile private var modelReady = false
+	@Volatile private var modelError: String? = null
+
+	/** Ayarlanırsa görüntü PixelCopy yerine buradan okunur. */
+	@Volatile var imageReader: ImageReader? = null
 
 	private var bitmap: Bitmap? = null
 	private var lastSource = ""
 	private var emptyFrames = 0
 	private var translationGeneration = 0
+
+	// ---- Tanılama sayaçları ----
+	@Volatile var framesOk = 0
+	@Volatile var framesFailed = 0
+	@Volatile var framesBlack = 0
+	@Volatile var framesNone = 0
+	@Volatile private var lastFailCode = 0
+	@Volatile private var lastOcr = ""
+	@Volatile private var ocrRuns = 0
+	@Volatile private var translations = 0
+	private var lastDebugUpdate = 0L
 
 	var enabled = true
 		set(value)
@@ -85,6 +108,20 @@ class SubtitleTranslator(
 			if(!value)
 				mainHandler.post { subtitleView.visibility = View.GONE }
 		}
+
+	fun resetStats()
+	{
+		framesOk = 0; framesFailed = 0; framesBlack = 0; framesNone = 0
+	}
+
+	/** PixelCopy yolu bu cihazda çalışmıyor gibi mi? (hep hata ya da hep siyah) */
+	fun captureLooksBroken(): Boolean
+	{
+		val total = framesOk + framesFailed
+		if(total < 12)
+			return framesNone >= 20
+		return framesOk == 0 || framesBlack >= framesOk
+	}
 
 	fun start()
 	{
@@ -102,16 +139,21 @@ class SubtitleTranslator(
 		workerThread = HandlerThread("subtitle-capture").also { it.start() }
 		workerHandler = Handler(workerThread!!.looper)
 
-		showStatus("Türkçe çeviri modeli hazırlanıyor… (ilk seferde ~30 MB indirilir)", 0)
-		translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
-			.addOnSuccessListener {
-				modelReady = true
-				showStatus("Türkçe altyazı hazır ✓", 2500)
-			}
-			.addOnFailureListener {
-				Log.e(TAG, "Model indirilemedi", it)
-				showStatus("Çeviri modeli indirilemedi. İnterneti kontrol edip yeniden bağlanın.", 8000)
-			}
+		if(!modelReady)
+		{
+			showStatus("Türkçe çeviri modeli hazırlanıyor… (ilk seferde ~30 MB indirilir)", 0)
+			translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
+				.addOnSuccessListener {
+					modelReady = true
+					modelError = null
+					showStatus("Türkçe altyazı hazır ✓", 2500)
+				}
+				.addOnFailureListener {
+					Log.e(TAG, "Model indirilemedi", it)
+					modelError = it.message ?: it.javaClass.simpleName
+					showStatus("Çeviri modeli indirilemedi: $modelError", 10000)
+				}
+		}
 
 		workerHandler?.post(captureLoop)
 	}
@@ -139,25 +181,41 @@ class SubtitleTranslator(
 		{
 			if(!running)
 				return
-			if(enabled && modelReady && !busy)
+			// Model hazır olmasa da kareleri okuyup OCR'ı çalıştır (tanılama için);
+			// çeviri model hazır olunca yapılır.
+			if(enabled && !busy)
 				capture()
+			updateDebug()
 			workerHandler?.postDelayed(this, INTERVAL_MS)
 		}
 	}
 
 	private fun capture()
 	{
+		val reader = imageReader
+		if(reader != null)
+		{
+			captureFromReader(reader)
+			return
+		}
 		if(Build.VERSION.SDK_INT < Build.VERSION_CODES.O)
 			return
-		val holder = surfaceView.holder
+		val sv = surfaceView ?: return
+		val holder = sv.holder
 		val surface = holder.surface
 		if(surface == null || !surface.isValid)
+		{
+			framesNone++
 			return
+		}
 		val frame = holder.surfaceFrame
 		val w = frame.width()
 		val h = frame.height()
 		if(w <= 0 || h <= 0)
+		{
+			framesNone++
 			return
+		}
 
 		val src = Rect(
 			(w * REGION_LEFT).toInt(),
@@ -181,36 +239,120 @@ class SubtitleTranslator(
 		busy = true
 		try
 		{
-			PixelCopy.request(surfaceView, src, bmp, { result ->
+			PixelCopy.request(sv, src, bmp, { result ->
 				if(result == PixelCopy.SUCCESS)
-					recognize(bmp)
+				{
+					framesOk++
+					if(isBlack(bmp))
+						framesBlack++
+					recognize(bmp.copy(Bitmap.Config.ARGB_8888, false))
+				}
 				else
+				{
+					framesFailed++
+					lastFailCode = result
 					busy = false
+				}
 			}, workerHandler!!)
 		}
 		catch(e: Exception)
 		{
 			Log.w(TAG, "PixelCopy başarısız", e)
+			framesFailed++
+			lastFailCode = -1
 			busy = false
 		}
 	}
 
-	private fun recognize(bmp: Bitmap)
+	/** ImageReader'dan (YUV) son kareyi al, altyazı bölgesini gri tonlu bitmap'e çevir. */
+	private fun captureFromReader(reader: ImageReader)
 	{
-		val image = try
+		val image = try { reader.acquireLatestImage() } catch(e: Exception) { null }
+		if(image == null)
 		{
-			// Kopya al: OCR çalışırken bir sonraki kare aynı bitmap'e yazılmasın.
-			InputImage.fromBitmap(bmp.copy(Bitmap.Config.ARGB_8888, false), 0)
+			framesNone++
+			return
+		}
+		busy = true
+		val bmp: Bitmap
+		try
+		{
+			val w = image.width
+			val h = image.height
+			val plane = image.planes[0]
+			val buf = plane.buffer
+			val rowStride = plane.rowStride
+			val pixelStride = plane.pixelStride
+			val x0 = (w * REGION_LEFT).toInt()
+			val y0 = (h * REGION_TOP).toInt()
+			val cw = (w * (REGION_RIGHT - REGION_LEFT)).toInt()
+			val ch = (h * (REGION_BOTTOM - REGION_TOP)).toInt()
+			val pixels = IntArray(cw * ch)
+			var maxY = 0
+			for(y in 0 until ch)
+			{
+				val rowBase = (y0 + y) * rowStride
+				for(x in 0 until cw)
+				{
+					val v = buf.get(rowBase + (x0 + x) * pixelStride).toInt() and 0xFF
+					if(v > maxY) maxY = v
+					pixels[y * cw + x] = Color.rgb(v, v, v)
+				}
+			}
+			bmp = Bitmap.createBitmap(pixels, cw, ch, Bitmap.Config.ARGB_8888)
+			framesOk++
+			if(maxY < 24)
+				framesBlack++
 		}
 		catch(e: Exception)
 		{
+			Log.w(TAG, "ImageReader karesi okunamadı", e)
+			framesFailed++
+			lastFailCode = -2
 			busy = false
 			return
 		}
+		finally
+		{
+			image.close()
+		}
+		recognize(bmp)
+	}
+
+	private fun isBlack(bmp: Bitmap): Boolean
+	{
+		var maxL = 0
+		val stepX = max(1, bmp.width / 24)
+		val stepY = max(1, bmp.height / 8)
+		var y = 0
+		while(y < bmp.height)
+		{
+			var x = 0
+			while(x < bmp.width)
+			{
+				val c = bmp.getPixel(x, y)
+				val l = (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
+				if(l > maxL) maxL = l
+				x += stepX
+			}
+			y += stepY
+		}
+		return maxL < 24
+	}
+
+	private fun recognize(bmp: Bitmap)
+	{
+		val image = try { InputImage.fromBitmap(bmp, 0) } catch(e: Exception) { busy = false; return }
+		ocrRuns++
 		recognizer.process(image)
-			.addOnSuccessListener { onTextRecognized(extractSubtitle(it)) }
+			.addOnSuccessListener {
+				val text = extractSubtitle(it)
+				lastOcr = text
+				onTextRecognized(text)
+			}
 			.addOnFailureListener {
 				Log.w(TAG, "OCR hatası", it)
+				lastOcr = "OCR hatası: ${it.message}"
 				busy = false
 			}
 	}
@@ -222,7 +364,7 @@ class SubtitleTranslator(
 			.flatMap { it.lines }
 			.filter { line ->
 				val letters = line.text.count { it.isLetter() }
-				letters >= 3 && letters >= line.text.length * 0.6f
+				letters >= 3 && letters >= line.text.length * 0.5f
 			}
 			.sortedBy { it.boundingBox?.top ?: 0 }
 		return lines.joinToString(" ") { it.text.trim() }
@@ -245,6 +387,12 @@ class SubtitleTranslator(
 		}
 		emptyFrames = 0
 
+		if(!modelReady)
+		{
+			busy = false
+			return
+		}
+
 		if(similarity(normalize(source), normalize(lastSource)) >= SAME_TEXT_SIMILARITY)
 		{
 			busy = false
@@ -262,6 +410,7 @@ class SubtitleTranslator(
 		val generation = ++translationGeneration
 		translator.translate(source)
 			.addOnSuccessListener { translated ->
+				translations++
 				cache.put(key, translated)
 				if(generation == translationGeneration)
 					show(translated)
@@ -281,6 +430,20 @@ class SubtitleTranslator(
 			subtitleView.text = text
 			subtitleView.visibility = View.VISIBLE
 		}
+	}
+
+	private fun updateDebug()
+	{
+		val dv = debugView ?: return
+		val now = SystemClock.elapsedRealtime()
+		if(now - lastDebugUpdate < 1000)
+			return
+		lastDebugUpdate = now
+		val mode = if(imageReader != null) "ImageReader" else "PixelCopy"
+		val model = when { modelReady -> "hazır"; modelError != null -> "HATA"; else -> "iniyor" }
+		val text = "[$mode] kare ok:$framesOk hata:$framesFailed(kod $lastFailCode) siyah:$framesBlack yok:$framesNone | " +
+			"OCR:$ocrRuns çeviri:$translations model:$model\nokunan: ${lastOcr.take(80)}"
+		mainHandler.post { dv.text = text }
 	}
 
 	private val hideStatusRunnable = Runnable { statusView.visibility = View.GONE }

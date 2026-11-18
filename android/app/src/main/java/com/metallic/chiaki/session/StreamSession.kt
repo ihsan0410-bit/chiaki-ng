@@ -93,6 +93,13 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 		}
 	}
 
+	/** Görüntüyü doğrudan bir Surface'e (ör. ImageReader) çöz. Oturum sürerken de değiştirilebilir. */
+	fun attachToSurface(surface: Surface?)
+	{
+		this.surface = surface
+		session?.setSurface(surface)
+	}
+
 	fun attachToSurfaceView(surfaceView: SurfaceView)
 	{
 		surfaceView.holder.addCallback(object: SurfaceHolder.Callback {

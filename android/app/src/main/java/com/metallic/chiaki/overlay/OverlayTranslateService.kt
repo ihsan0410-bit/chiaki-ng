@@ -16,7 +16,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Color
+import android.graphics.ImageFormat
 import android.graphics.PixelFormat
+import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -78,6 +80,9 @@ class OverlayTranslateService : Service()
 	private var session: StreamSession? = null
 	private var translator: SubtitleTranslator? = null
 	private var statusView: TextView? = null
+	private var imageReader: ImageReader? = null
+	private var videoW = 1280
+	private var videoH = 720
 	private var stateObserver: Observer<StreamState>? = null
 
 	override fun onBind(intent: Intent?): IBinder? = null
@@ -149,7 +154,9 @@ class OverlayTranslateService : Service()
 		// Remote Play görüntüsü buraya çözülür. Ekranda 2x2 piksel (görünmez),
 		// ama tampon gerçek video çözünürlüğünde, böylece altyazı net okunur.
 		val surfaceView = SurfaceView(this)
-		surfaceView.holder.setFixedSize(connectInfo.videoProfile.width, connectInfo.videoProfile.height)
+		videoW = connectInfo.videoProfile.width
+		videoH = connectInfo.videoProfile.height
+		surfaceView.holder.setFixedSize(videoW, videoH)
 		root.addView(surfaceView, FrameLayout.LayoutParams(2, 2, Gravity.TOP or Gravity.START))
 
 		val subtitle = TextView(this).apply {
@@ -186,6 +193,18 @@ class OverlayTranslateService : Service()
 			Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(24f) })
 		statusView = status
 
+		// Tanılama satırı (sol üst, küçük): kare okuma / OCR durumu
+		val debug = TextView(this).apply {
+			setPadding(dp(6f), dp(4f), dp(6f), dp(4f))
+			setBackgroundColor(Color.parseColor("#99000000"))
+			setTextColor(Color.parseColor("#FFB0FFB0"))
+			textSize = 11f
+		}
+		root.addView(debug, FrameLayout.LayoutParams(
+			FrameLayout.LayoutParams.WRAP_CONTENT,
+			FrameLayout.LayoutParams.WRAP_CONTENT,
+			Gravity.TOP or Gravity.START).apply { topMargin = dp(4f); leftMargin = dp(4f) })
+
 		@Suppress("DEPRECATION")
 		val type = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
 			WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -216,7 +235,7 @@ class OverlayTranslateService : Service()
 		wm.addView(root, params)
 		overlayRoot = root
 
-		val subtitleTranslator = SubtitleTranslator(surfaceView, subtitle, status)
+		val subtitleTranslator = SubtitleTranslator(surfaceView, subtitle, status, debug)
 		translator = subtitleTranslator
 
 		val observer = Observer<StreamState> { state -> onStateChanged(state) }
@@ -232,7 +251,11 @@ class OverlayTranslateService : Service()
 	{
 		when(state)
 		{
-			is StreamStateConnected -> showStatus("PS5'e bağlandı ✓ Türkçe altyazı açık.", 4000)
+			is StreamStateConnected -> {
+				showStatus("PS5'e bağlandı ✓ Türkçe altyazı açık.", 4000)
+				translator?.resetStats()
+				mainHandler.postDelayed(checkCapture, 8000)
+			}
 			is StreamStateQuit -> {
 				showStatus("PS5 bağlantısı koptu: ${state.reason}" + (state.reasonString?.let { "\n$it" } ?: ""), 0)
 				mainHandler.postDelayed({ stopSelf() }, 8000)
@@ -246,6 +269,31 @@ class OverlayTranslateService : Service()
 				mainHandler.postDelayed({ stopSelf() }, 10000)
 			}
 			else -> {}
+		}
+	}
+
+	/** PixelCopy bu TV'de görüntüyü okuyamıyorsa ImageReader yöntemine geç. */
+	private val checkCapture = Runnable {
+		val t = translator ?: return@Runnable
+		if(imageReader == null && t.captureLooksBroken())
+			switchToImageReader()
+	}
+
+	private fun switchToImageReader()
+	{
+		try
+		{
+			val reader = ImageReader.newInstance(videoW, videoH, ImageFormat.YUV_420_888, 3)
+			imageReader = reader
+			translator?.imageReader = reader
+			translator?.resetStats()
+			session?.attachToSurface(reader.surface)
+			showStatus("Görüntü okuma yöntemi değiştirildi (yedek yöntem).", 4000)
+		}
+		catch(e: Exception)
+		{
+			Log.e(TAG, "ImageReader'a geçilemedi", e)
+			showStatus("Yedek okuma yöntemi başlatılamadı: ${e.message}", 0)
 		}
 	}
 
@@ -273,6 +321,8 @@ class OverlayTranslateService : Service()
 		overlayRoot?.let { try { windowManager?.removeView(it) } catch(_: Exception) { } }
 		overlayRoot = null
 		statusView = null
+		try { imageReader?.close() } catch(_: Exception) { }
+		imageReader = null
 		try { ChiakiAudio.setMuted(false) } catch(_: Throwable) { }
 	}
 
