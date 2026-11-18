@@ -93,6 +93,7 @@ private class ChiakiNative
 		@JvmStatic external fun sessionSetSurface(ptr: Long, surface: Surface?)
 		@JvmStatic external fun sessionSetControllerState(ptr: Long, controllerState: ControllerState)
 		@JvmStatic external fun sessionSetLoginPin(ptr: Long, pin: String)
+		@JvmStatic external fun setAudioMuted(muted: Boolean)
 		@JvmStatic external fun discoveryServiceCreate(result: CreateResult, options: DiscoveryServiceOptions, javaService: DiscoveryService)
 		@JvmStatic external fun discoveryServiceFree(ptr: Long)
 		@JvmStatic external fun discoveryServiceWakeup(ptr: Long, host: String, userCredential: Long, ps5: Boolean)
@@ -531,4 +532,11 @@ class Regist(
 	{
 		callback(event)
 	}
+}
+
+
+/** Remote Play sesini aç/kapat (HDMI üstü çeviri modunda kapalı). */
+object ChiakiAudio
+{
+	fun setMuted(muted: Boolean) = ChiakiNative.setAudioMuted(muted)
 }

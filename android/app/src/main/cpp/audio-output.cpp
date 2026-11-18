@@ -9,6 +9,16 @@
 
 #include <oboe/Oboe.h>
 
+#include <atomic>
+
+// HDMI üstü çeviri modunda Remote Play sesi kapatılır (oyun sesi zaten HDMI'dan geliyor)
+static std::atomic<bool> g_audio_muted(false);
+
+extern "C" void android_chiaki_audio_output_set_muted(int muted)
+{
+	g_audio_muted.store(muted != 0);
+}
+
 #define BUFFER_CHUNK_SIZE 1024
 #define BUFFER_CHUNKS_COUNT 32
 
@@ -58,6 +68,12 @@ extern "C" void android_chiaki_audio_output_settings(uint32_t channels, uint32_t
 {
 	auto ao = reinterpret_cast<AudioOutput *>(audio_output);
 
+	if(g_audio_muted.load())
+	{
+		CHIAKI_LOGI(ao->log, "Audio muted, not opening an audio stream");
+		return;
+	}
+
 	oboe::AudioStreamBuilder builder;
 	builder.setPerformanceMode(oboe::PerformanceMode::LowLatency)
 		->setSharingMode(oboe::SharingMode::Exclusive)
@@ -102,6 +118,8 @@ oboe::DataCallbackResult AudioOutputCallback::onAudioReady(oboe::AudioStream *st
 	auto buf = reinterpret_cast<uint8_t *>(audio_data);
 
 	size_t buf_size_delivered = audio_output->buf.Pop(buf, buf_size_requested);
+	if(g_audio_muted.load())
+		buf_size_delivered = 0;
 	//CHIAKI_LOGW(audio_output->log, "Delivered %llu", (unsigned long long)buf_size_delivered);
 
 	if(buf_size_delivered < buf_size_requested)

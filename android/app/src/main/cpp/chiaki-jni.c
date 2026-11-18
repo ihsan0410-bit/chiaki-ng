@@ -404,6 +404,11 @@ JNIEXPORT jint JNICALL JNI_FCN(sessionJoin)(JNIEnv *env, jobject obj, jlong ptr)
 	return chiaki_session_join(&session->session);
 }
 
+JNIEXPORT void JNICALL JNI_FCN(setAudioMuted)(JNIEnv *env, jobject obj, jboolean muted)
+{
+	android_chiaki_audio_output_set_muted(muted ? 1 : 0);
+}
+
 JNIEXPORT void JNICALL JNI_FCN(sessionSetSurface)(JNIEnv *env, jobject obj, jlong ptr, jobject surface)
 {
 	AndroidChiakiSession *session = (AndroidChiakiSession *)ptr;

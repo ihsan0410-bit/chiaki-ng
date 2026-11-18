@@ -174,6 +174,67 @@ class MainActivity : AppCompatActivity()
 		}
 	}
 
+	private fun chooseModeAndConnect(connectInfo: ConnectInfo)
+	{
+		val options = arrayOf(
+			"HDMI üstünde Türkçe altyazı (4K HDR korunur)",
+			"Uygulamanın içinde oyna (1080p)")
+		MaterialAlertDialogBuilder(this)
+			.setTitle("Nasıl oynamak istiyorsun?")
+			.setItems(options) { _, which ->
+				if(which == 0)
+					startOverlayMode(connectInfo)
+				else
+					Intent(this, StreamActivity::class.java).let {
+						it.putExtra(StreamActivity.EXTRA_CONNECT_INFO, connectInfo)
+						startActivity(it)
+					}
+			}
+			.show()
+	}
+
+	private fun startOverlayMode(connectInfo: ConnectInfo)
+	{
+		if(!com.metallic.chiaki.overlay.OverlayTranslateService.canDrawOverlays(this))
+		{
+			requestOverlayPermission()
+			return
+		}
+		com.metallic.chiaki.overlay.OverlayTranslateService.start(this, connectInfo)
+		MaterialAlertDialogBuilder(this)
+			.setMessage("Türkçe altyazı arka planda başlatıldı.\n\nŞimdi kumandadan PS5'in bağlı olduğu HDMI girişine geç ve oyunu her zamanki gibi oyna. Altyazılar ekranın altında Türkçe çıkacak.\n\nDurdurmak için bu uygulamayı tekrar açman yeterli.")
+			.setPositiveButton("Tamam") { _, _ -> moveTaskToBack(true) }
+			.show()
+	}
+
+	private fun requestOverlayPermission()
+	{
+		val intent = Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+			android.net.Uri.parse("package:$packageName"))
+		val opened = try { startActivity(intent); true } catch(e: Exception) { false }
+		MaterialAlertDialogBuilder(this)
+			.setTitle("İzin gerekli: diğer uygulamaların üzerinde göster")
+			.setMessage(
+				(if(opened) "Açılan ekranda mirfanceviri için izni aç, sonra geri gel ve tekrar dene.\n\n" else "") +
+				"Bu ekran TV'de açılmazsa: Ayarlar → Uygulamalar → Özel uygulama erişimi → Diğer uygulamaların üzerinde göster → mirfanceviri.\n\n" +
+				"O da yoksa bilgisayardan (adb ile) şu komut izni verir:\nadb shell appops set $packageName SYSTEM_ALERT_WINDOW allow")
+			.setPositiveButton("Tamam", null)
+			.show()
+	}
+
+	override fun onResume()
+	{
+		super.onResume()
+		if(com.metallic.chiaki.overlay.OverlayTranslateService.isRunning)
+		{
+			MaterialAlertDialogBuilder(this)
+				.setMessage("Türkçe altyazı (HDMI üstü) şu an çalışıyor.")
+				.setPositiveButton("Durdur") { _, _ -> com.metallic.chiaki.overlay.OverlayTranslateService.stop(this) }
+				.setNegativeButton("Çalışmaya devam etsin") { _, _ -> moveTaskToBack(true) }
+				.show()
+		}
+	}
+
 	private fun hostTriggered(host: DisplayHost)
 	{
 		val registeredHost = host.registeredHost
@@ -181,10 +242,7 @@ class MainActivity : AppCompatActivity()
 		{
 			fun connect() {
 				val connectInfo = ConnectInfo(host.isPS5, host.host, registeredHost.rpRegistKey, registeredHost.rpKey, Preferences(this).videoProfile)
-				Intent(this, StreamActivity::class.java).let {
-					it.putExtra(StreamActivity.EXTRA_CONNECT_INFO, connectInfo)
-					startActivity(it)
-				}
+				chooseModeAndConnect(connectInfo)
 			}
 
 			if(host is DiscoveredDisplayHost && host.discoveredHost.state == DiscoveryHost.State.STANDBY)

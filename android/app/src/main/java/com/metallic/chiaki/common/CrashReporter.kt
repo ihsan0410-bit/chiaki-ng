@@ -135,7 +135,7 @@ object CrashReporter
 	}
 
 	private fun header() =
-		"Chiaki Çeviri hata raporu\n" +
+		"mirfanceviri hata raporu\n" +
 		"Cihaz: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
 		"ABI: ${Build.SUPPORTED_ABIS.joinToString()}\n\n"
 
