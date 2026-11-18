@@ -229,7 +229,6 @@ class OverlayTranslateService : Service()
 		val preferences = Preferences(this)
 		val input = StreamInput(this, preferences) // hiçbir tuş gönderilmez; kumanda PS5'e bağlı kalır
 		val streamSession = StreamSession(connectInfo, LogManager(this), preferences.logVerbose, input)
-		streamSession.attachToSurfaceView(surfaceView)
 		session = streamSession
 
 		wm.addView(root, params)
@@ -237,6 +236,22 @@ class OverlayTranslateService : Service()
 
 		val subtitleTranslator = SubtitleTranslator(surfaceView, subtitle, status, debug)
 		translator = subtitleTranslator
+
+		// HDMI üstü modda görüntüyü doğrudan ImageReader'a çöz (TV'lerde PixelCopy
+		// arka plandaki bir pencereden kare okuyamayabiliyor).
+		try
+		{
+			val reader = ImageReader.newInstance(videoW, videoH, ImageFormat.YUV_420_888, 4)
+			imageReader = reader
+			subtitleTranslator.attachImageReader(reader)
+			streamSession.attachToSurface(reader.surface)
+		}
+		catch(e: Exception)
+		{
+			Log.e(TAG, "ImageReader kurulamadı, PixelCopy kullanılacak", e)
+			imageReader = null
+			streamSession.attachToSurfaceView(surfaceView)
+		}
 
 		val observer = Observer<StreamState> { state -> onStateChanged(state) }
 		stateObserver = observer
@@ -277,15 +292,17 @@ class OverlayTranslateService : Service()
 		val t = translator ?: return@Runnable
 		if(imageReader == null && t.captureLooksBroken())
 			switchToImageReader()
+		else if(imageReader != null && t.framesOk == 0)
+			showStatus("Görüntü okunamıyor (yedek yöntem de kare almadı). Sol üstteki satırın fotoğrafını Claude'a gönder.", 0)
 	}
 
 	private fun switchToImageReader()
 	{
 		try
 		{
-			val reader = ImageReader.newInstance(videoW, videoH, ImageFormat.YUV_420_888, 3)
+			val reader = ImageReader.newInstance(videoW, videoH, ImageFormat.YUV_420_888, 4)
 			imageReader = reader
-			translator?.imageReader = reader
+			translator?.attachImageReader(reader)
 			translator?.resetStats()
 			session?.attachToSurface(reader.surface)
 			showStatus("Görüntü okuma yöntemi değiştirildi (yedek yöntem).", 4000)

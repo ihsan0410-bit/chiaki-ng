@@ -84,6 +84,36 @@ class SubtitleTranslator(
 
 	/** Ayarlanırsa görüntü PixelCopy yerine buradan okunur. */
 	@Volatile var imageReader: ImageReader? = null
+		private set
+	private val imageLock = Object()
+	private var latestImage: android.media.Image? = null
+	private var drainThread: HandlerThread? = null
+	@Volatile private var modelStartedAt = 0L
+
+	/**
+	 * Görüntüyü ImageReader'dan oku. Kod çözücü hiç beklemesin diye kareler ayrı
+	 * bir iş parçacığında sürekli alınır; sadece en yenisi tutulur.
+	 */
+	fun attachImageReader(reader: ImageReader)
+	{
+		val t = HandlerThread("frame-drain").also { it.start() }
+		drainThread = t
+		reader.setOnImageAvailableListener({ r ->
+			val img = try { r.acquireLatestImage() } catch(e: Exception) { null }
+			if(img != null)
+				synchronized(imageLock) {
+					latestImage?.close()
+					latestImage = img
+				}
+		}, Handler(t.looper))
+		imageReader = reader
+	}
+
+	private fun takeLatestImage(): android.media.Image? = synchronized(imageLock) {
+		val img = latestImage
+		latestImage = null
+		img
+	}
 
 	private var bitmap: Bitmap? = null
 	private var lastSource = ""
@@ -120,7 +150,7 @@ class SubtitleTranslator(
 		val total = framesOk + framesFailed
 		if(total < 12)
 			return framesNone >= 20
-		return framesOk == 0 || framesBlack >= framesOk
+		return framesFailed > total * 0.8f || framesBlack >= framesOk
 	}
 
 	fun start()
@@ -140,22 +170,27 @@ class SubtitleTranslator(
 		workerHandler = Handler(workerThread!!.looper)
 
 		if(!modelReady)
-		{
-			showStatus("Türkçe çeviri modeli hazırlanıyor… (ilk seferde ~30 MB indirilir)", 0)
-			translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
-				.addOnSuccessListener {
-					modelReady = true
-					modelError = null
-					showStatus("Türkçe altyazı hazır ✓", 2500)
-				}
-				.addOnFailureListener {
-					Log.e(TAG, "Model indirilemedi", it)
-					modelError = it.message ?: it.javaClass.simpleName
-					showStatus("Çeviri modeli indirilemedi: $modelError", 10000)
-				}
-		}
+			downloadModel()
 
 		workerHandler?.post(captureLoop)
+	}
+
+	private fun downloadModel()
+	{
+		modelStartedAt = SystemClock.elapsedRealtime()
+		showStatus("Türkçe çeviri modeli indiriliyor… (ilk seferde ~30 MB, bir kere)", 0)
+		translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
+			.addOnSuccessListener {
+				modelReady = true
+				modelError = null
+				showStatus("Türkçe altyazı hazır ✓", 2500)
+			}
+			.addOnFailureListener {
+				Log.e(TAG, "Model indirilemedi", it)
+				modelError = it.message ?: it.javaClass.simpleName
+				showStatus("Çeviri modeli indirilemedi: $modelError — 20 sn sonra tekrar denenecek", 10000)
+				mainHandler.postDelayed({ if(running && !modelReady) downloadModel() }, 20000)
+			}
 	}
 
 	fun stop()
@@ -171,6 +206,10 @@ class SubtitleTranslator(
 	fun close()
 	{
 		stop()
+		imageReader?.setOnImageAvailableListener(null, null)
+		drainThread?.quitSafely()
+		drainThread = null
+		synchronized(imageLock) { latestImage?.close(); latestImage = null }
 		recognizer.close()
 		translator.close()
 	}
@@ -267,7 +306,7 @@ class SubtitleTranslator(
 	/** ImageReader'dan (YUV) son kareyi al, altyazı bölgesini gri tonlu bitmap'e çevir. */
 	private fun captureFromReader(reader: ImageReader)
 	{
-		val image = try { reader.acquireLatestImage() } catch(e: Exception) { null }
+		val image = takeLatestImage()
 		if(image == null)
 		{
 			framesNone++
@@ -440,7 +479,11 @@ class SubtitleTranslator(
 			return
 		lastDebugUpdate = now
 		val mode = if(imageReader != null) "ImageReader" else "PixelCopy"
-		val model = when { modelReady -> "hazır"; modelError != null -> "HATA"; else -> "iniyor" }
+		val model = when {
+			modelReady -> "hazır"
+			modelError != null -> "HATA(${modelError?.take(40)})"
+			else -> "iniyor ${(now - modelStartedAt) / 1000}sn"
+		}
 		val text = "[$mode] kare ok:$framesOk hata:$framesFailed(kod $lastFailCode) siyah:$framesBlack yok:$framesNone | " +
 			"OCR:$ocrRuns çeviri:$translations model:$model\nokunan: ${lastOcr.take(80)}"
 		mainHandler.post { dv.text = text }
